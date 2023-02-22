@@ -14,10 +14,11 @@ public:
     WebSocketClient() = delete;
     WebSocketClient(const WebSocketClient&) = delete;
     WebSocketClient& operator=(const WebSocketClient&) = delete;
-    ~WebSocketClient() {}
+    ~WebSocketClient();
 
     int Connect(std::string addr, int port, std::string path = "/");
     void Disconnect();
+    static void CloseAll();
 
     int SendMessage(std::string& msg);
 
@@ -31,8 +32,11 @@ private:
     std::string path_;
     bool conn_established_ = false;
 
+    RingFIFO<std::function<void(void)>>* msg_queue_;
+
     static int LwsClientCallback(lws* wsi, lws_callback_reasons reason, void* user, void* in, size_t len);
     static void EventLoop();
+    void WaitConnEstablish();
 };
 
 #endif
