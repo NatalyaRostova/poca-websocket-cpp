@@ -121,7 +121,9 @@ int WebSocketClient::SendMessage(std::string &msg) {
     std::condition_variable msg_cv;
     bool submitted = false;
     std::function<void(void)> msg_cmd = [&]() {
-        lws_write(wsi_, (unsigned char *)msg.c_str(), msg.size(), LWS_WRITE_TEXT);
+        unsigned char buf[msg.size() + LWS_PRE];
+        memcpy(buf + LWS_PRE, msg.c_str(), msg.size());
+        lws_write(wsi_, buf + LWS_PRE, msg.size(), LWS_WRITE_TEXT);
         submitted = true;
         msg_cv.notify_all();
     };
@@ -141,7 +143,9 @@ int WebSocketClient::SendBinary(void *data, int len) {
     std::condition_variable msg_cv;
     bool submitted = false;
     std::function<void(void)> msg_cmd = [&]() {
-        lws_write(wsi_, (unsigned char *)data, len, LWS_WRITE_BINARY);
+        unsigned char buf[len + LWS_PRE];
+        memcpy(buf + LWS_PRE, data, len);
+        lws_write(wsi_, buf + LWS_PRE, len, LWS_WRITE_BINARY);
         submitted = true;
         msg_cv.notify_all();
     };
