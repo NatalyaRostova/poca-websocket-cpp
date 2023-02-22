@@ -36,12 +36,14 @@ void WebSocketClient::EventLoop() {
             conn_request();
         }
         lws_service(context, 0);
+        cv.notify_all();
     }
     lws_context_destroy(context);
 }
 
 void WebSocketClient::CloseAll() {
     running.store(false);
+    lws_cancel_service(context);
     worker_thread.join();
 }
 
@@ -65,18 +67,32 @@ WebSocketClient::WebSocketClient(WebSocketClientListener &listener) {
 WebSocketClient::~WebSocketClient() { delete msg_queue_; }
 
 int WebSocketClient::LwsClientCallback(lws *wsi, lws_callback_reasons reason, void *user, void *in, size_t len) {
-    poca_info("LwsClientCallback, wsi: %p, reason: %d", wsi, reason);
+    // poca_info("LwsClientCallback, wsi: %p, reason: %d", wsi, reason);
     std::unique_lock<std::mutex> lck(mux);
     std::function<void(void)> msg_submit;
+    int first = 0, final = 0;
     switch (reason) {
         case LWS_CALLBACK_PROTOCOL_INIT:
             protocol_inited = true;
-            cv.notify_all();
             break;
         case LWS_CALLBACK_CLIENT_RECEIVE:
-            poca_info("Rx: %s, wsi: %p", (char *)in, wsi);
+            first = lws_is_first_fragment(wsi);
+            final = lws_is_final_fragment(wsi);
+            // poca_info("Rx: %s, wsi: %p, len: %d, first: %d, final: %d", (char *)in, wsi, len, first, final);
+            if (first) {
+                map_lws_wsc[wsi]->receive_buf_.Clear();
+            }
+            map_lws_wsc[wsi]->receive_buf_.Push(in, len);
+            if (final) {
+                map_lws_wsc[wsi]->listener_->OnReceive(map_lws_wsc[wsi]->receive_buf_.GetPtr(),
+                                                       map_lws_wsc[wsi]->receive_buf_.GetLength());
+                map_lws_wsc[wsi]->receive_buf_.Clear();
+            }
             break;
         case LWS_CALLBACK_CLIENT_WRITEABLE:
+            if (map_lws_wsc[wsi]->close_.load() == true) {
+                return -1;
+            }
             if (map_lws_wsc[wsi]->msg_queue_->GetNoWait(msg_submit)) {
                 msg_submit();
                 lws_callback_on_writable(wsi);
@@ -86,7 +102,6 @@ int WebSocketClient::LwsClientCallback(lws *wsi, lws_callback_reasons reason, vo
             poca_info("%s: established connection, wsi = %p", __func__, wsi);
             lws_callback_on_writable(wsi);
             map_lws_wsc[wsi]->conn_established_ = true;
-            cv.notify_all();
             break;
         default:
             break;
@@ -107,6 +122,26 @@ int WebSocketClient::SendMessage(std::string &msg) {
     bool submitted = false;
     std::function<void(void)> msg_cmd = [&]() {
         lws_write(wsi_, (unsigned char *)msg.c_str(), msg.size(), LWS_WRITE_TEXT);
+        submitted = true;
+        msg_cv.notify_all();
+    };
+
+    msg_queue_->Put(msg_cmd);
+    lws_callback_on_writable(wsi_);
+    lws_cancel_service(context);
+    msg_cv.wait(lck, [&]() { return submitted == true; });
+
+    return 0;
+}
+
+int WebSocketClient::SendBinary(void *data, int len) {
+    WaitConnEstablish();
+    std::mutex m;
+    std::unique_lock<std::mutex> lck(m);
+    std::condition_variable msg_cv;
+    bool submitted = false;
+    std::function<void(void)> msg_cmd = [&]() {
+        lws_write(wsi_, (unsigned char *)data, len, LWS_WRITE_BINARY);
         submitted = true;
         msg_cv.notify_all();
     };
@@ -149,8 +184,13 @@ int WebSocketClient::Connect(std::string addr, int port, std::string path) {
             return 0;
         }
     };
+    close_.store(false);
     conn_queue.Put(client_conn);
     return 0;
 }
 
-void WebSocketClient::Disconnect() {}
+void WebSocketClient::Disconnect() {
+    close_.store(true);
+    lws_callback_on_writable(wsi_);
+    lws_cancel_service(context);
+}

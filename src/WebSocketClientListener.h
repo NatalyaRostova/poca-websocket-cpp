@@ -5,8 +5,8 @@ class WebSocketClientListener {
 public:
     WebSocketClientListener() {}
     ~WebSocketClientListener() {}
-    
-    virtual void OnReceive() = 0;
+
+    virtual void OnReceive(void* data, int len) = 0;
     virtual void OnClosed() = 0;
 
 private:

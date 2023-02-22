@@ -1,10 +1,12 @@
 #ifndef POCA_WEBSOCKET_CPP_SRC_WEB_SOCKET_CLIENT_H
 #define POCA_WEBSOCKET_CPP_SRC_WEB_SOCKET_CLIENT_H
 
+#include <atomic>
 #include <functional>
 #include <string>
 
 #include "WebSocketClientListener.h"
+#include "WebSocketReceiveBuffer.h"
 #include "libwebsockets.h"
 #include "ring_fifo.h"
 
@@ -21,6 +23,7 @@ public:
     static void CloseAll();
 
     int SendMessage(std::string& msg);
+    int SendBinary(void* data, int len);
 
 private:
     WebSocketClientListener* listener_;
@@ -31,6 +34,8 @@ private:
     int port_;
     std::string path_;
     bool conn_established_ = false;
+    std::atomic_bool close_ = ATOMIC_VAR_INIT(false);
+    WebSocketReceiveBuffer receive_buf_;
 
     RingFIFO<std::function<void(void)>>* msg_queue_;
 
