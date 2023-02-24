@@ -3,7 +3,10 @@
 
 #include <atomic>
 #include <functional>
+#include <map>
+#include <mutex>
 #include <string>
+#include <thread>
 
 #include "WebSocketClientListener.h"
 #include "WebSocketReceiveBuffer.h"
@@ -38,10 +41,20 @@ private:
     WebSocketReceiveBuffer receive_buf_;
 
     RingFIFO<std::function<void(void)>>* msg_queue_;
+    void WaitConnEstablish();
 
     static int LwsClientCallback(lws* wsi, lws_callback_reasons reason, void* user, void* in, size_t len);
     static void EventLoop();
-    void WaitConnEstablish();
+
+    static std::once_flag once_flag_;
+    static std::thread worker_thread_;
+    static std::atomic_bool running_;
+    static std::mutex mux_;
+    static bool protocol_inited_;
+    static std::condition_variable cv_;
+    static lws_context* context_;
+    static std::map<lws*, WebSocketClient*> map_lws_wsc_;
+    static RingFIFO<std::function<void(void)>> conn_queue_;
 };
 
 #endif

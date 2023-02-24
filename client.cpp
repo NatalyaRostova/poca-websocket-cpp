@@ -5,7 +5,7 @@
 
 class Callback : public WebSocketClientListener {
     virtual void OnReceive(void* data, int len) override {
-        std::cout << "Receive data: " << (std::string)(char*)data << ", len: " << len << std::endl;
+        std::cout << "Receive data, len: " << len << std::endl;
     }
     virtual void OnClosed() override { std::cout << "OnClosed" << std::endl; }
 };
@@ -14,7 +14,7 @@ int main(int argc, char* argv[]) {
     Callback cb;
     WebSocketClient client(cb);
     client.Connect("127.0.0.1", 8080);
-    std::string msg = std::string(2048, 'a');
+    std::string msg = std::string(20480, 'a');
     for (int i = 0; i < 1000; ++i) {
         msg += std::to_string(i);
         client.SendMessage(msg);

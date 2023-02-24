@@ -4,62 +4,58 @@
 
 #include <atomic>
 #include <iostream>
-#include <map>
-#include <mutex>
-#include <thread>
 
 #include "logger.h"
 
 #define MAX_PAYLOAD_SIZE 8192
 
-static lws_protocols protocols[] = {{
-                                        "ws",
-                                        nullptr,
-                                        MAX_PAYLOAD_SIZE,
-                                        MAX_PAYLOAD_SIZE,
-                                    },
-                                    {NULL, NULL, 0}};
-static std::once_flag once_flag;
-static std::thread worker_thread;
-static std::atomic_bool running;
-static std::mutex mux;
-static bool protocol_inited = false;
-static std::condition_variable cv;
-static lws_context *context;
-static std::map<lws *, WebSocketClient *> map_lws_wsc;
-static RingFIFO<std::function<void(void)>> conn_queue(10);
+std::once_flag WebSocketClient::once_flag_;
+std::thread WebSocketClient::worker_thread_;
+std::atomic_bool WebSocketClient::running_;
+std::mutex WebSocketClient::mux_;
+bool WebSocketClient::protocol_inited_ = false;
+std::condition_variable WebSocketClient::cv_;
+lws_context *WebSocketClient::context_;
+std::map<lws *, WebSocketClient *> WebSocketClient::map_lws_wsc_;
+RingFIFO<std::function<void(void)>> WebSocketClient::conn_queue_(10);
 
 void WebSocketClient::EventLoop() {
     std::function<void(void)> conn_request;
-    while (running.load()) {
-        while (conn_queue.GetNoWait(conn_request)) {
+    while (running_.load()) {
+        while (conn_queue_.GetNoWait(conn_request)) {
             conn_request();
         }
-        lws_service(context, 0);
-        cv.notify_all();
+        lws_service(context_, 0);
+        cv_.notify_all();
     }
-    lws_context_destroy(context);
+    lws_context_destroy(context_);
 }
 
 void WebSocketClient::CloseAll() {
-    running.store(false);
-    lws_cancel_service(context);
-    worker_thread.join();
+    running_.store(false);
+    lws_cancel_service(context_);
+    worker_thread_.join();
 }
 
 WebSocketClient::WebSocketClient(WebSocketClientListener &listener) {
-    std::call_once(once_flag, [&]() {
-        protocols[0].callback = &WebSocketClient::LwsClientCallback;
+    std::call_once(once_flag_, [&]() {
+        static lws_protocols protocols[] = {{
+                                                "ws",
+                                                &WebSocketClient::LwsClientCallback,
+                                                MAX_PAYLOAD_SIZE,
+                                                MAX_PAYLOAD_SIZE,
+                                            },
+                                            {NULL, NULL, 0}};
         lws_context_creation_info ctx_info = {0};
         ctx_info.port = CONTEXT_PORT_NO_LISTEN;
         ctx_info.protocols = protocols;
         ctx_info.options = LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
-        context = lws_create_context(&ctx_info);
-        running.store(true);
-        worker_thread = std::thread(&WebSocketClient::EventLoop);
+        context_ = lws_create_context(&ctx_info);
+        running_.store(true);
+        worker_thread_ = std::thread(&WebSocketClient::EventLoop);
     });
-    std::unique_lock<std::mutex> lck(mux);
-    cv.wait(lck, [&]() { return protocol_inited == true; });
+    std::unique_lock<std::mutex> lck(mux_);
+    cv_.wait(lck, [&]() { return protocol_inited_ == true; });
     listener_ = &listener;
     msg_queue_ = new RingFIFO<std::function<void(void)>>(10);
 }
@@ -68,32 +64,32 @@ WebSocketClient::~WebSocketClient() { delete msg_queue_; }
 
 int WebSocketClient::LwsClientCallback(lws *wsi, lws_callback_reasons reason, void *user, void *in, size_t len) {
     // poca_info("LwsClientCallback, wsi: %p, reason: %d", wsi, reason);
-    std::unique_lock<std::mutex> lck(mux);
+    std::unique_lock<std::mutex> lck(mux_);
     std::function<void(void)> msg_submit;
     int first = 0, final = 0;
     switch (reason) {
         case LWS_CALLBACK_PROTOCOL_INIT:
-            protocol_inited = true;
+            protocol_inited_ = true;
             break;
         case LWS_CALLBACK_CLIENT_RECEIVE:
             first = lws_is_first_fragment(wsi);
             final = lws_is_final_fragment(wsi);
-            // poca_info("Rx: %s, wsi: %p, len: %d, first: %d, final: %d", (char *)in, wsi, len, first, final);
+            // poca_info("Receive, wsi: %p, len: %d, first: %d, final: %d", wsi, len, first, final);
             if (first) {
-                map_lws_wsc[wsi]->receive_buf_.Clear();
+                map_lws_wsc_[wsi]->receive_buf_.Clear();
             }
-            map_lws_wsc[wsi]->receive_buf_.Push(in, len);
+            map_lws_wsc_[wsi]->receive_buf_.Push(in, len);
             if (final) {
-                map_lws_wsc[wsi]->listener_->OnReceive(map_lws_wsc[wsi]->receive_buf_.GetPtr(),
-                                                       map_lws_wsc[wsi]->receive_buf_.GetLength());
-                map_lws_wsc[wsi]->receive_buf_.Clear();
+                map_lws_wsc_[wsi]->listener_->OnReceive(map_lws_wsc_[wsi]->receive_buf_.GetPtr(),
+                                                        map_lws_wsc_[wsi]->receive_buf_.GetLength());
+                map_lws_wsc_[wsi]->receive_buf_.Clear();
             }
             break;
         case LWS_CALLBACK_CLIENT_WRITEABLE:
-            if (map_lws_wsc[wsi]->close_.load() == true) {
+            if (map_lws_wsc_[wsi]->close_.load() == true) {
                 return -1;
             }
-            if (map_lws_wsc[wsi]->msg_queue_->GetNoWait(msg_submit)) {
+            if (map_lws_wsc_[wsi]->msg_queue_->GetNoWait(msg_submit)) {
                 msg_submit();
                 lws_callback_on_writable(wsi);
             }
@@ -101,7 +97,7 @@ int WebSocketClient::LwsClientCallback(lws *wsi, lws_callback_reasons reason, vo
         case LWS_CALLBACK_CLIENT_ESTABLISHED:
             poca_info("%s: established connection, wsi = %p", __func__, wsi);
             lws_callback_on_writable(wsi);
-            map_lws_wsc[wsi]->conn_established_ = true;
+            map_lws_wsc_[wsi]->conn_established_ = true;
             break;
         default:
             break;
@@ -110,8 +106,8 @@ int WebSocketClient::LwsClientCallback(lws *wsi, lws_callback_reasons reason, vo
 }
 
 void WebSocketClient::WaitConnEstablish() {
-    std::unique_lock<std::mutex> lck(mux);
-    cv.wait(lck, [&]() { return conn_established_ == true; });
+    std::unique_lock<std::mutex> lck(mux_);
+    cv_.wait(lck, [&]() { return conn_established_ == true; });
 }
 
 int WebSocketClient::SendMessage(std::string &msg) {
@@ -130,7 +126,7 @@ int WebSocketClient::SendMessage(std::string &msg) {
 
     msg_queue_->Put(msg_cmd);
     lws_callback_on_writable(wsi_);
-    lws_cancel_service(context);
+    lws_cancel_service(context_);
     msg_cv.wait(lck, [&]() { return submitted == true; });
 
     return 0;
@@ -152,7 +148,7 @@ int WebSocketClient::SendBinary(void *data, int len) {
 
     msg_queue_->Put(msg_cmd);
     lws_callback_on_writable(wsi_);
-    lws_cancel_service(context);
+    lws_cancel_service(context_);
     msg_cv.wait(lck, [&]() { return submitted == true; });
 
     return 0;
@@ -167,7 +163,7 @@ int WebSocketClient::Connect(std::string addr, int port, std::string path) {
 
     memset(&i, 0, sizeof(i));
 
-    i.context = context;
+    i.context = context_;
     i.port = port_;
     i.address = server_address_.c_str();
     i.path = path_.c_str();
@@ -183,18 +179,18 @@ int WebSocketClient::Connect(std::string addr, int port, std::string path) {
             poca_info("connect failed");
             return 1;
         } else {
-            map_lws_wsc[wsi_] = this;
+            map_lws_wsc_[wsi_] = this;
             poca_info("connection %s:%d, wsi_: %p", i.address, i.port, wsi_);
             return 0;
         }
     };
     close_.store(false);
-    conn_queue.Put(client_conn);
+    conn_queue_.Put(client_conn);
     return 0;
 }
 
 void WebSocketClient::Disconnect() {
     close_.store(true);
     lws_callback_on_writable(wsi_);
-    lws_cancel_service(context);
+    lws_cancel_service(context_);
 }
