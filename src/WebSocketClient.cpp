@@ -63,7 +63,7 @@ WebSocketClient::WebSocketClient(WebSocketClientListener &listener) {
 WebSocketClient::~WebSocketClient() { delete msg_queue_; }
 
 int WebSocketClient::LwsClientCallback(lws *wsi, lws_callback_reasons reason, void *user, void *in, size_t len) {
-    // poca_info("LwsClientCallback, wsi: %p, reason: %d", wsi, reason);
+    poca_info("LwsClientCallback, wsi: %p, reason: %d", wsi, reason);
     std::unique_lock<std::mutex> lck(mux_);
     std::function<void(void)> msg_submit;
     int first = 0, final = 0;
@@ -99,6 +99,9 @@ int WebSocketClient::LwsClientCallback(lws *wsi, lws_callback_reasons reason, vo
             lws_callback_on_writable(wsi);
             map_lws_wsc_[wsi]->conn_established_ = true;
             break;
+        case LWS_CALLBACK_CLIENT_CLOSED:
+            map_lws_wsc_[wsi]->listener_->OnClosed();
+            break;
         default:
             break;
     }
@@ -112,8 +115,8 @@ void WebSocketClient::WaitConnEstablish() {
 
 int WebSocketClient::SendMessage(std::string &msg) {
     WaitConnEstablish();
-    std::mutex m;
-    std::unique_lock<std::mutex> lck(m);
+    std::mutex msg_mux;
+    std::unique_lock<std::mutex> msg_lck(msg_mux);
     std::condition_variable msg_cv;
     bool submitted = false;
     std::function<void(void)> msg_cmd = [&]() {
@@ -127,15 +130,15 @@ int WebSocketClient::SendMessage(std::string &msg) {
     msg_queue_->Put(msg_cmd);
     lws_callback_on_writable(wsi_);
     lws_cancel_service(context_);
-    msg_cv.wait(lck, [&]() { return submitted == true; });
+    msg_cv.wait(msg_lck, [&]() { return submitted == true; });
 
     return 0;
 }
 
 int WebSocketClient::SendBinary(void *data, int len) {
     WaitConnEstablish();
-    std::mutex m;
-    std::unique_lock<std::mutex> lck(m);
+    std::mutex msg_mux;
+    std::unique_lock<std::mutex> msg_lck(msg_mux);
     std::condition_variable msg_cv;
     bool submitted = false;
     std::function<void(void)> msg_cmd = [&]() {
@@ -149,7 +152,7 @@ int WebSocketClient::SendBinary(void *data, int len) {
     msg_queue_->Put(msg_cmd);
     lws_callback_on_writable(wsi_);
     lws_cancel_service(context_);
-    msg_cv.wait(lck, [&]() { return submitted == true; });
+    msg_cv.wait(msg_lck, [&]() { return submitted == true; });
 
     return 0;
 }
@@ -173,20 +176,27 @@ int WebSocketClient::Connect(std::string addr, int port, std::string path) {
     i.protocol = "ws";
     i.local_protocol_name = "ws";
 
-    std::function<void(void)> client_conn = [=]() {
+    std::mutex conn_mux;
+    std::unique_lock<std::mutex> conn_lck(conn_mux);
+    std::condition_variable conn_cv;
+    int ret = -1;
+    std::function<void(void)> client_conn = [&]() {
         wsi_ = lws_client_connect_via_info(&i);
         if (!wsi_) {
             poca_info("connect failed");
-            return 1;
+            ret = 1;
         } else {
             map_lws_wsc_[wsi_] = this;
             poca_info("connection %s:%d, wsi_: %p", i.address, i.port, wsi_);
-            return 0;
+            ret = 0;
         }
+        conn_cv.notify_all();
     };
+
     close_.store(false);
     conn_queue_.Put(client_conn);
-    return 0;
+    conn_cv.wait(conn_lck, [&]() { return ret != -1; });
+    return ret;
 }
 
 void WebSocketClient::Disconnect() {
