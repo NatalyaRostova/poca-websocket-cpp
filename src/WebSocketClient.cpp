@@ -2,9 +2,6 @@
 
 #include <libwebsockets.h>
 
-#include <atomic>
-#include <iostream>
-
 #include "logger.h"
 
 #define MAX_PAYLOAD_SIZE 8192
@@ -58,12 +55,16 @@ WebSocketClient::WebSocketClient(WebSocketClientListener &listener) {
     cv_.wait(lck, [&]() { return protocol_inited_ == true; });
     listener_ = &listener;
     msg_queue_ = new RingFIFO<std::function<void(void)>>(10);
+    receive_buf_ = new WebSocketReceiveBuffer();
 }
 
-WebSocketClient::~WebSocketClient() { delete msg_queue_; }
+WebSocketClient::~WebSocketClient() {
+    delete msg_queue_;
+    delete receive_buf_;
+}
 
 int WebSocketClient::LwsClientCallback(lws *wsi, lws_callback_reasons reason, void *user, void *in, size_t len) {
-    poca_info("LwsClientCallback, wsi: %p, reason: %d", wsi, reason);
+    // poca_info("LwsClientCallback, wsi: %p, reason: %d", wsi, reason);
     std::unique_lock<std::mutex> lck(mux_);
     std::function<void(void)> msg_submit;
     int first = 0, final = 0;
@@ -76,13 +77,13 @@ int WebSocketClient::LwsClientCallback(lws *wsi, lws_callback_reasons reason, vo
             final = lws_is_final_fragment(wsi);
             // poca_info("Receive, wsi: %p, len: %d, first: %d, final: %d", wsi, len, first, final);
             if (first) {
-                map_lws_wsc_[wsi]->receive_buf_.Clear();
+                map_lws_wsc_[wsi]->receive_buf_->Clear();
             }
-            map_lws_wsc_[wsi]->receive_buf_.Push(in, len);
+            map_lws_wsc_[wsi]->receive_buf_->Push(in, len);
             if (final) {
-                map_lws_wsc_[wsi]->listener_->OnReceive(map_lws_wsc_[wsi]->receive_buf_.GetPtr(),
-                                                        map_lws_wsc_[wsi]->receive_buf_.GetLength());
-                map_lws_wsc_[wsi]->receive_buf_.Clear();
+                map_lws_wsc_[wsi]->listener_->OnReceive(map_lws_wsc_[wsi]->receive_buf_->GetPtr(),
+                                                        map_lws_wsc_[wsi]->receive_buf_->GetLength());
+                map_lws_wsc_[wsi]->receive_buf_->Clear();
             }
             break;
         case LWS_CALLBACK_CLIENT_WRITEABLE:
@@ -122,9 +123,9 @@ int WebSocketClient::SendMessage(std::string &msg) {
     std::function<void(void)> msg_cmd = [&]() {
         unsigned char buf[msg.size() + LWS_PRE];
         memcpy(buf + LWS_PRE, msg.c_str(), msg.size());
-        lws_write(wsi_, buf + LWS_PRE, msg.size(), LWS_WRITE_TEXT);
         submitted = true;
         msg_cv.notify_all();
+        lws_write(wsi_, buf + LWS_PRE, msg.size(), LWS_WRITE_TEXT);
     };
 
     msg_queue_->Put(msg_cmd);
@@ -144,9 +145,9 @@ int WebSocketClient::SendBinary(void *data, int len) {
     std::function<void(void)> msg_cmd = [&]() {
         unsigned char buf[len + LWS_PRE];
         memcpy(buf + LWS_PRE, data, len);
-        lws_write(wsi_, buf + LWS_PRE, len, LWS_WRITE_BINARY);
         submitted = true;
         msg_cv.notify_all();
+        lws_write(wsi_, buf + LWS_PRE, len, LWS_WRITE_BINARY);
     };
 
     msg_queue_->Put(msg_cmd);

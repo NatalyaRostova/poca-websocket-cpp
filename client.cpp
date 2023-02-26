@@ -4,9 +4,8 @@
 #include "WebSocketClient.h"
 
 class Callback : public WebSocketClientListener {
-    virtual void OnReceive(void* data, int len) override {
-        std::cout << "Receive data, len: " << len << std::endl;
-    }
+public:
+    virtual void OnReceive(void* data, int len) override { std::cout << "Receive data, len: " << len << std::endl; }
     virtual void OnClosed() override { std::cout << "OnClosed" << std::endl; }
 };
 

@@ -7,7 +7,7 @@
 class WebSocketReceiveBuffer {
 public:
     WebSocketReceiveBuffer();
-    ~WebSocketReceiveBuffer() {}
+    ~WebSocketReceiveBuffer();
 
     void Push(void* data, int size);
     void Clear();
@@ -15,10 +15,10 @@ public:
     int GetLength();
 
 private:
-    std::mutex mux;
-    int capacity;
-    int len;
-    uint8_t* buf;
+    std::mutex mux_;
+    int capacity_;
+    int len_;
+    uint8_t* buf_;
 };
 
 #endif

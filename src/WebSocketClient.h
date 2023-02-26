@@ -38,7 +38,7 @@ private:
     std::string path_;
     bool conn_established_ = false;
     std::atomic_bool close_ = ATOMIC_VAR_INIT(false);
-    WebSocketReceiveBuffer receive_buf_;
+    WebSocketReceiveBuffer* receive_buf_;
 
     RingFIFO<std::function<void(void)>>* msg_queue_;
     void WaitConnEstablish();

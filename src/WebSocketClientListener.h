@@ -8,8 +8,6 @@ public:
 
     virtual void OnReceive(void* data, int len) = 0;
     virtual void OnClosed() = 0;
-
-private:
 };
 
 #endif
