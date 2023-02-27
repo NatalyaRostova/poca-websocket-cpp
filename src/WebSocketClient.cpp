@@ -15,7 +15,7 @@ namespace poca_ws {
     std::condition_variable WebSocketClient::cv_;
     lws_context *WebSocketClient::context_;
     std::map<lws *, WebSocketClient *> WebSocketClient::map_lws_wsc_;
-    RingFIFO<std::function<void(void)>> WebSocketClient::conn_queue_(10);
+    SyncDeque<std::function<void(void)>> WebSocketClient::conn_queue_;
 
     void WebSocketClient::EventLoop() {
         std::function<void(void)> conn_request;
@@ -55,27 +55,16 @@ namespace poca_ws {
         std::unique_lock<std::mutex> lck(mux_);
         cv_.wait(lck, [&]() { return protocol_inited_ == true; });
         listener_ = &listener;
-
-        const int send_buf_ring_size = 5;
-        ring_send_buf_empty_ = new RingFIFO<WebSocketFrameBuffer *>(send_buf_ring_size);
-        ring_send_buf_full_ = new RingFIFO<WebSocketFrameBuffer *>(send_buf_ring_size);
-
-        for (int i = 0; i < send_buf_ring_size; ++i) {
-            WebSocketFrameBuffer *send_buf = new WebSocketFrameBuffer();
-            send_buf->Clear();
-            ring_send_buf_empty_->Put(send_buf);
-        }
-
         receive_buf_internal_ = new WebSocketFrameBuffer();
     }
 
     WebSocketClient::~WebSocketClient() {
         delete receive_buf_internal_;
         WebSocketFrameBuffer *send_buf;
-        while (ring_send_buf_empty_->GetNoWait(send_buf)) {
+        while (deque_send_buf_empty_.GetNoWait(send_buf)) {
             if (send_buf != nullptr) delete send_buf;
         }
-        while (ring_send_buf_full_->GetNoWait(send_buf)) {
+        while (deque_send_buf_full_.GetNoWait(send_buf)) {
             if (send_buf != nullptr) delete send_buf;
         }
     }
@@ -113,11 +102,11 @@ namespace poca_ws {
                     return -1;
                 }
                 WebSocketFrameBuffer *msg_submit;
-                if (map_lws_wsc_[wsi]->ring_send_buf_full_->GetNoWait(msg_submit)) {
+                if (map_lws_wsc_[wsi]->deque_send_buf_full_.GetNoWait(msg_submit)) {
                     lws_write(wsi, msg_submit->GetPtr() + LWS_PRE, msg_submit->GetLength(),
                               (lws_write_protocol)msg_submit->GetType());
                     msg_submit->Clear();
-                    map_lws_wsc_[wsi]->ring_send_buf_empty_->Put(msg_submit);
+                    map_lws_wsc_[wsi]->deque_send_buf_empty_.Put(msg_submit);
                 }
                 break;
             case LWS_CALLBACK_CLIENT_ESTABLISHED:
@@ -141,12 +130,15 @@ namespace poca_ws {
 
     int WebSocketClient::SendMessage(std::string &msg) {
         WaitConnEstablish();
-        WebSocketFrameBuffer *msg_frame = ring_send_buf_empty_->Get();
+        WebSocketFrameBuffer *msg_frame;
+        if (!deque_send_buf_empty_.GetNoWait(msg_frame)) {
+            msg_frame = new WebSocketFrameBuffer();
+        }
         msg_frame->Push(nullptr, LWS_PRE);
         msg_frame->Push((uint8_t *)msg.c_str(), (int)msg.size());
         msg_frame->SetType(LWS_WRITE_TEXT);
 
-        ring_send_buf_full_->Put(msg_frame);
+        deque_send_buf_full_.Put(msg_frame);
         lws_callback_on_writable(wsi_);
         lws_cancel_service(context_);
 
@@ -155,12 +147,15 @@ namespace poca_ws {
 
     int WebSocketClient::SendBinary(uint8_t *data, int len) {
         WaitConnEstablish();
-        WebSocketFrameBuffer *msg_frame = ring_send_buf_empty_->Get();
+        WebSocketFrameBuffer *msg_frame;
+        if (!deque_send_buf_empty_.GetNoWait(msg_frame)) {
+            msg_frame = new WebSocketFrameBuffer();
+        }
         msg_frame->Push(nullptr, LWS_PRE);
         msg_frame->Push(data, len);
         msg_frame->SetType(LWS_WRITE_BINARY);
 
-        ring_send_buf_full_->Put(msg_frame);
+        deque_send_buf_full_.Put(msg_frame);
         lws_callback_on_writable(wsi_);
         lws_cancel_service(context_);
         return 0;

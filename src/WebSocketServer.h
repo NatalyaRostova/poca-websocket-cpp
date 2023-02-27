@@ -11,7 +11,6 @@
 #include "WebSocketFrameBuffer.h"
 #include "WebSocketServerListener.h"
 #include "libwebsockets.h"
-#include "ring_fifo.h"
 #include "sync_deque.h"
 
 namespace poca_ws {

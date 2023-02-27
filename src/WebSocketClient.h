@@ -11,7 +11,7 @@
 #include "WebSocketClientListener.h"
 #include "WebSocketFrameBuffer.h"
 #include "libwebsockets.h"
-#include "ring_fifo.h"
+#include "sync_deque.h"
 
 namespace poca_ws {
     class WebSocketClient {
@@ -41,8 +41,8 @@ namespace poca_ws {
         std::atomic_bool close_ = ATOMIC_VAR_INIT(false);
         WebSocketFrameBuffer* receive_buf_internal_;
 
-        RingFIFO<WebSocketFrameBuffer*>* ring_send_buf_empty_;
-        RingFIFO<WebSocketFrameBuffer*>* ring_send_buf_full_;
+        SyncDeque<WebSocketFrameBuffer*> deque_send_buf_empty_;
+        SyncDeque<WebSocketFrameBuffer*> deque_send_buf_full_;
         void WaitConnEstablish();
 
         static int LwsClientCallback(lws* wsi, lws_callback_reasons reason, void* user, void* in, size_t len);
@@ -56,7 +56,7 @@ namespace poca_ws {
         static std::condition_variable cv_;
         static lws_context* context_;
         static std::map<lws*, WebSocketClient*> map_lws_wsc_;
-        static RingFIFO<std::function<void(void)>> conn_queue_;
+        static SyncDeque<std::function<void(void)>> conn_queue_;
     };
 }  // namespace poca_ws
 #endif
