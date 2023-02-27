@@ -8,7 +8,7 @@
 #include <string>
 #include <thread>
 
-#include "WebSocketCallbackBuffer.h"
+#include "WebSocketFrameBuffer.h"
 #include "WebSocketServerListener.h"
 #include "libwebsockets.h"
 #include "ring_fifo.h"
@@ -26,7 +26,7 @@ namespace poca_ws {
         void Close();
 
         int SendMessage(int64_t user_id, std::string& msg);
-        int SendBinary(int64_t user_id, void* data, int len);
+        int SendBinary(int64_t user_id, uint8_t* data, int len);
 
     private:
         WebSocketServerListener* listener_;
@@ -35,13 +35,14 @@ namespace poca_ws {
         bool conn_established_ = false;
         std::atomic_bool close_ = ATOMIC_VAR_INIT(false);
 
-        RingFIFO<WebSocketCallbackBuffer*>* ring_receive_buf_empty_;
-        RingFIFO<WebSocketCallbackBuffer*>* ring_receive_buf_full_;
-        std::map<lws*, WebSocketCallbackBuffer*> receive_buf_internal_;
+        RingFIFO<WebSocketFrameBuffer*>* ring_receive_buf_empty_;
+        RingFIFO<WebSocketFrameBuffer*>* ring_receive_buf_full_;
+        std::map<lws*, WebSocketFrameBuffer*> receive_buf_internal_;
         std::thread callback_thread_;
         void CallbackEventLoop();
 
-        RingFIFO<std::function<void(void)>>* msg_queue_;
+        RingFIFO<WebSocketFrameBuffer*>* ring_send_buf_empty_;
+        RingFIFO<WebSocketFrameBuffer*>* ring_send_buf_full_;
 
         int LwsClientCallback(lws* wsi, lws_callback_reasons reason, void* user, void* in, size_t len);
 

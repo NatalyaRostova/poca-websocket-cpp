@@ -19,35 +19,49 @@ namespace poca_ws {
 
     WebSocketServer::WebSocketServer(WebSocketServerListener& listener) {
         listener_ = &listener;
-        msg_queue_ = new RingFIFO<std::function<void(void)>>(10);
-        const int receive_buf_ring_size = 10;
-        ring_receive_buf_empty_ = new RingFIFO<WebSocketCallbackBuffer*>(receive_buf_ring_size);
-        ring_receive_buf_full_ = new RingFIFO<WebSocketCallbackBuffer*>(receive_buf_ring_size);
+        const int receive_buf_ring_size = 5;
+        const int send_buf_ring_size = 5;
+        ring_receive_buf_empty_ = new RingFIFO<WebSocketFrameBuffer*>(receive_buf_ring_size);
+        ring_receive_buf_full_ = new RingFIFO<WebSocketFrameBuffer*>(receive_buf_ring_size);
 
         for (int i = 0; i < receive_buf_ring_size; ++i) {
-            WebSocketCallbackBuffer* receive_buf = new WebSocketCallbackBuffer();
+            WebSocketFrameBuffer* receive_buf = new WebSocketFrameBuffer();
+            receive_buf->Clear();
             ring_receive_buf_empty_->Put(receive_buf);
+        }
+
+        ring_send_buf_empty_ = new RingFIFO<WebSocketFrameBuffer*>(send_buf_ring_size);
+        ring_send_buf_full_ = new RingFIFO<WebSocketFrameBuffer*>(send_buf_ring_size);
+
+        for (int i = 0; i < send_buf_ring_size; ++i) {
+            WebSocketFrameBuffer* send_buf = new WebSocketFrameBuffer();
+            send_buf->Clear();
+            ring_send_buf_empty_->Put(send_buf);
         }
     }
 
     WebSocketServer::~WebSocketServer() {
-        delete msg_queue_;
-        WebSocketCallbackBuffer* receive_buf;
-        while (ring_receive_buf_empty_->GetNoWait(receive_buf)) {
-            delete receive_buf;
+        WebSocketFrameBuffer* receive_and_send_buf;
+        while (ring_receive_buf_empty_->GetNoWait(receive_and_send_buf)) {
+            if (receive_and_send_buf != nullptr) delete receive_and_send_buf;
         }
-        while (ring_receive_buf_full_->GetNoWait(receive_buf)) {
-            delete receive_buf;
+        while (ring_receive_buf_full_->GetNoWait(receive_and_send_buf)) {
+            if (receive_and_send_buf != nullptr) delete receive_and_send_buf;
+        }
+        while (ring_send_buf_empty_->GetNoWait(receive_and_send_buf)) {
+            if (receive_and_send_buf != nullptr) delete receive_and_send_buf;
+        }
+        while (ring_send_buf_full_->GetNoWait(receive_and_send_buf)) {
+            if (receive_and_send_buf != nullptr) delete receive_and_send_buf;
         }
     }
 
     void WebSocketServer::CallbackEventLoop() {
-        WebSocketCallbackBuffer* buf;
+        WebSocketFrameBuffer* buf;
         while (true) {
             if (close_.load()) break;
             buf = ring_receive_buf_full_->Get();
             if (buf == nullptr) continue;
-            buf->Lock();
             switch (buf->GetType()) {
                 case ServerCallbackOnBinaryReceive:
                     listener_->OnReceive(buf->GetUserId(), buf->GetPtr(), buf->GetLength());
@@ -64,7 +78,7 @@ namespace poca_ws {
                 default:
                     break;
             }
-            buf->Unlock();
+            buf->Clear();
             ring_receive_buf_empty_->Put(buf);
         }
     }
@@ -87,14 +101,12 @@ namespace poca_ws {
 
     int WebSocketServer::LwsClientCallback(lws* wsi, lws_callback_reasons reason, void* user, void* in, size_t len) {
         poca_info("LwsClientCallback, wsi: %p, reason: %d", wsi, reason);
-        std::unique_lock<std::mutex> lck(mux_);
-        std::function<void(void)> msg_submit;
         int64_t user_id = int64_t(wsi);
         switch (reason) {
             case LWS_CALLBACK_ESTABLISHED:
                 poca_info("client [%p] connect", wsi);
                 {
-                    WebSocketCallbackBuffer* on_connect = ring_receive_buf_empty_->Get();
+                    WebSocketFrameBuffer* on_connect = ring_receive_buf_empty_->Get();
                     on_connect->SetUserId(user_id);
                     on_connect->SetType(ServerCallbackOnConnect);
                     ring_receive_buf_full_->Put(on_connect);
@@ -103,7 +115,7 @@ namespace poca_ws {
             case LWS_CALLBACK_CLOSED:
                 poca_info("client connect close, wsi: %p", wsi);
                 {
-                    WebSocketCallbackBuffer* on_connect = ring_receive_buf_empty_->Get();
+                    WebSocketFrameBuffer* on_connect = ring_receive_buf_empty_->Get();
                     on_connect->SetUserId(user_id);
                     on_connect->SetType(ServerCallbackOnClose);
                     ring_receive_buf_full_->Put(on_connect);
@@ -117,25 +129,29 @@ namespace poca_ws {
                 if (first) {
                     receive_buf_internal_[wsi] = ring_receive_buf_empty_->Get();
                 }
-                WebSocketCallbackBuffer* on_receive = receive_buf_internal_[wsi];
+                WebSocketFrameBuffer* on_receive = receive_buf_internal_[wsi];
                 on_receive->SetUserId(user_id);
                 if (is_binary) {
                     on_receive->SetType(ServerCallbackOnBinaryReceive);
                 } else {
                     on_receive->SetType(ServerCallbackOnTextReceive);
                 }
-                on_receive->Push(in, len);
+                on_receive->Push((uint8_t*)in, len);
                 if (final) {
                     ring_receive_buf_full_->Put(on_receive);
                 }
                 lws_callback_on_writable(wsi);
             } break;
-            case LWS_CALLBACK_SERVER_WRITEABLE:
-                if (msg_queue_->GetNoWait(msg_submit)) {
-                    msg_submit();
-                    lws_callback_on_writable(wsi);
+            case LWS_CALLBACK_SERVER_WRITEABLE: {
+                WebSocketFrameBuffer* msg_submit;
+                if (ring_send_buf_full_->GetNoWait(msg_submit)) {
+                    lws_write(wsi, msg_submit->GetPtr() + LWS_PRE, msg_submit->GetLength(),
+                              (lws_write_protocol)msg_submit->GetType());
+                    // lws_callback_on_writable(wsi);
+                    msg_submit->Clear();
+                    ring_send_buf_empty_->Put(msg_submit);
                 }
-                break;
+            } break;
             default:
                 break;
         }
@@ -179,52 +195,38 @@ namespace poca_ws {
     }
 
     int WebSocketServer::SendMessage(int64_t user_id, std::string& msg) {
-        std::mutex msg_mux;
-        std::unique_lock<std::mutex> msg_lck(msg_mux);
-        std::condition_variable msg_cv;
-        bool submitted = false;
         lws* wsi = (lws*)user_id;
-        std::function<void(void)> msg_cmd = [&]() {
-            unsigned char buf[msg.size() + LWS_PRE];
-            memcpy(buf + LWS_PRE, msg.c_str(), msg.size());
-            submitted = true;
-            msg_cv.notify_all();
-            lws_write(wsi, buf + LWS_PRE, msg.size(), LWS_WRITE_TEXT);
-        };
+        WebSocketFrameBuffer* msg_frame = ring_send_buf_empty_->Get();
+        msg_frame->Push(nullptr, LWS_PRE);
+        msg_frame->Push((uint8_t*)msg.c_str(), (int)msg.size());
+        msg_frame->SetUserId(user_id);
+        msg_frame->SetType(LWS_WRITE_TEXT);
 
-        msg_queue_->Put(msg_cmd);
+        ring_send_buf_full_->Put(msg_frame);
         lws_callback_on_writable(wsi);
         lws_cancel_service(context_);
-        msg_cv.wait(msg_lck, [&]() { return submitted == true; });
 
         return 0;
     }
 
-    int WebSocketServer::SendBinary(int64_t user_id, void* data, int len) {
-        std::mutex msg_mux;
-        std::unique_lock<std::mutex> msg_lck(msg_mux);
-        std::condition_variable msg_cv;
-        bool submitted = false;
+    int WebSocketServer::SendBinary(int64_t user_id, uint8_t* data, int len) {
         lws* wsi = (lws*)user_id;
-        std::function<void(void)> msg_cmd = [&]() {
-            unsigned char buf[len + LWS_PRE];
-            memcpy(buf + LWS_PRE, data, len);
-            submitted = true;
-            msg_cv.notify_all();
-            lws_write(wsi, buf + LWS_PRE, len, LWS_WRITE_BINARY);
-        };
+        WebSocketFrameBuffer* msg_frame = ring_send_buf_empty_->Get();
+        msg_frame->Push(nullptr, LWS_PRE);
+        msg_frame->Push(data, len);
+        msg_frame->SetUserId(user_id);
+        msg_frame->SetType(LWS_WRITE_BINARY);
 
-        msg_queue_->Put(msg_cmd);
+        ring_send_buf_full_->Put(msg_frame);
         lws_callback_on_writable(wsi);
         lws_cancel_service(context_);
-        msg_cv.wait(msg_lck, [&]() { return submitted == true; });
 
         return 0;
     }
 
     void WebSocketServer::Close() {
         close_.store(true);
-        WebSocketCallbackBuffer* none = nullptr;
+        WebSocketFrameBuffer* none = nullptr;
         ring_receive_buf_full_->Put(none);
         lws_cancel_service(context_);
     }

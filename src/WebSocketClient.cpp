@@ -55,14 +55,29 @@ namespace poca_ws {
         std::unique_lock<std::mutex> lck(mux_);
         cv_.wait(lck, [&]() { return protocol_inited_ == true; });
         listener_ = &listener;
-        msg_queue_ = new RingFIFO<std::function<void(void)>>(10);
 
-        receive_buf_internal_ = new WebSocketCallbackBuffer();
+        const int send_buf_ring_size = 5;
+        ring_send_buf_empty_ = new RingFIFO<WebSocketFrameBuffer *>(send_buf_ring_size);
+        ring_send_buf_full_ = new RingFIFO<WebSocketFrameBuffer *>(send_buf_ring_size);
+
+        for (int i = 0; i < send_buf_ring_size; ++i) {
+            WebSocketFrameBuffer *send_buf = new WebSocketFrameBuffer();
+            send_buf->Clear();
+            ring_send_buf_empty_->Put(send_buf);
+        }
+
+        receive_buf_internal_ = new WebSocketFrameBuffer();
     }
 
     WebSocketClient::~WebSocketClient() {
-        delete msg_queue_;
         delete receive_buf_internal_;
+        WebSocketFrameBuffer *send_buf;
+        while (ring_send_buf_empty_->GetNoWait(send_buf)) {
+            if (send_buf != nullptr) delete send_buf;
+        }
+        while (ring_send_buf_full_->GetNoWait(send_buf)) {
+            if (send_buf != nullptr) delete send_buf;
+        }
     }
 
     int WebSocketClient::LwsClientCallback(lws *wsi, lws_callback_reasons reason, void *user, void *in, size_t len) {
@@ -80,7 +95,7 @@ namespace poca_ws {
                 if (first) {
                     map_lws_wsc_[wsi]->receive_buf_internal_->Clear();
                 }
-                map_lws_wsc_[wsi]->receive_buf_internal_->Push(in, len);
+                map_lws_wsc_[wsi]->receive_buf_internal_->Push((uint8_t *)in, len);
                 if (final) {
                     map_lws_wsc_[wsi]->listener_->OnReceive(map_lws_wsc_[wsi]->receive_buf_internal_->GetPtr(),
                                                             map_lws_wsc_[wsi]->receive_buf_internal_->GetLength());
@@ -91,9 +106,12 @@ namespace poca_ws {
                 if (map_lws_wsc_[wsi]->close_.load() == true) {
                     return -1;
                 }
-                if (map_lws_wsc_[wsi]->msg_queue_->GetNoWait(msg_submit)) {
-                    msg_submit();
-                    lws_callback_on_writable(wsi);
+                WebSocketFrameBuffer *msg_submit;
+                if (map_lws_wsc_[wsi]->ring_send_buf_full_->GetNoWait(msg_submit)) {
+                    lws_write(wsi, msg_submit->GetPtr() + LWS_PRE, msg_submit->GetLength(),
+                              (lws_write_protocol)msg_submit->GetType());
+                    msg_submit->Clear();
+                    map_lws_wsc_[wsi]->ring_send_buf_empty_->Put(msg_submit);
                 }
                 break;
             case LWS_CALLBACK_CLIENT_ESTABLISHED:
@@ -116,48 +134,27 @@ namespace poca_ws {
     }
 
     int WebSocketClient::SendMessage(std::string &msg) {
-        WaitConnEstablish();
-        std::mutex msg_mux;
-        std::unique_lock<std::mutex> msg_lck(msg_mux);
-        std::condition_variable msg_cv;
-        bool submitted = false;
-        std::function<void(void)> msg_cmd = [&]() {
-            unsigned char buf[msg.size() + LWS_PRE];
-            memcpy(buf + LWS_PRE, msg.c_str(), msg.size());
-            submitted = true;
-            lws_write(wsi_, buf + LWS_PRE, msg.size(), LWS_WRITE_TEXT);
-            msg_cv.notify_all();
-        };
+        WebSocketFrameBuffer *msg_frame = ring_send_buf_empty_->Get();
+        msg_frame->Push(nullptr, LWS_PRE);
+        msg_frame->Push((uint8_t *)msg.c_str(), (int)msg.size());
+        msg_frame->SetType(LWS_WRITE_TEXT);
 
-        msg_queue_->Put(msg_cmd);
+        ring_send_buf_full_->Put(msg_frame);
         lws_callback_on_writable(wsi_);
         lws_cancel_service(context_);
-        poca_info("1");
-        msg_cv.wait(msg_lck, [&]() { return submitted == true; });
-        poca_info("2");
 
         return 0;
     }
 
-    int WebSocketClient::SendBinary(void *data, int len) {
-        WaitConnEstablish();
-        std::mutex msg_mux;
-        std::unique_lock<std::mutex> msg_lck(msg_mux);
-        std::condition_variable msg_cv;
-        bool submitted = false;
-        std::function<void(void)> msg_cmd = [&]() {
-            unsigned char buf[len + LWS_PRE];
-            memcpy(buf + LWS_PRE, data, len);
-            submitted = true;
-            lws_write(wsi_, buf + LWS_PRE, len, LWS_WRITE_BINARY);
-            msg_cv.notify_all();
-        };
+    int WebSocketClient::SendBinary(uint8_t *data, int len) {
+        WebSocketFrameBuffer *msg_frame = ring_send_buf_empty_->Get();
+        msg_frame->Push(nullptr, LWS_PRE);
+        msg_frame->Push(data, len);
+        msg_frame->SetType(LWS_WRITE_BINARY);
 
-        msg_queue_->Put(msg_cmd);
+        ring_send_buf_full_->Put(msg_frame);
         lws_callback_on_writable(wsi_);
         lws_cancel_service(context_);
-        msg_cv.wait(msg_lck, [&]() { return submitted == true; });
-
         return 0;
     }
 

@@ -9,7 +9,7 @@ class Callback : public poca_ws::WebSocketServerListener {
 public:
     poca_ws::WebSocketServer* s = nullptr;
 
-    virtual void OnReceive(int64_t user_id, void* data, int len) override {
+    virtual void OnReceive(int64_t user_id, uint8_t* data, int len) override {
         printf("OnReceive, user_id: %ld, size: %d\n", user_id, len);
         if (s) {
             std::string msg = "receive data, len: " + std::to_string(len);

@@ -5,14 +5,14 @@
 #include <mutex>
 
 namespace poca_ws {
-    class WebSocketCallbackBuffer {
+    class WebSocketFrameBuffer {
     public:
-        WebSocketCallbackBuffer();
-        ~WebSocketCallbackBuffer();
+        WebSocketFrameBuffer();
+        ~WebSocketFrameBuffer();
 
-        void Push(void* data, int size);
+        void Push(uint8_t* data, int size);
         void Clear();
-        void* GetPtr();
+        uint8_t* GetPtr();
         int GetLength();
 
         void SetType(int type);

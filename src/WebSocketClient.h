@@ -8,8 +8,8 @@
 #include <string>
 #include <thread>
 
-#include "WebSocketCallbackBuffer.h"
 #include "WebSocketClientListener.h"
+#include "WebSocketFrameBuffer.h"
 #include "libwebsockets.h"
 #include "ring_fifo.h"
 
@@ -27,7 +27,7 @@ namespace poca_ws {
         static void CloseAll();
 
         int SendMessage(std::string& msg);
-        int SendBinary(void* data, int len);
+        int SendBinary(uint8_t* data, int len);
 
     private:
         WebSocketClientListener* listener_;
@@ -39,9 +39,10 @@ namespace poca_ws {
         std::string path_;
         bool conn_established_ = false;
         std::atomic_bool close_ = ATOMIC_VAR_INIT(false);
-        WebSocketCallbackBuffer* receive_buf_internal_;
+        WebSocketFrameBuffer* receive_buf_internal_;
 
-        RingFIFO<std::function<void(void)>>* msg_queue_;
+        RingFIFO<WebSocketFrameBuffer*>* ring_send_buf_empty_;
+        RingFIFO<WebSocketFrameBuffer*>* ring_send_buf_full_;
         void WaitConnEstablish();
 
         static int LwsClientCallback(lws* wsi, lws_callback_reasons reason, void* user, void* in, size_t len);

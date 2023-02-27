@@ -9,7 +9,7 @@ namespace poca_ws {
         WebSocketServerListener() {}
         ~WebSocketServerListener() {}
 
-        virtual void OnReceive(int64_t user_id, void* data, int len) = 0;
+        virtual void OnReceive(int64_t user_id, uint8_t* data, int len) = 0;
         virtual void OnConnect(int64_t user_id) = 0;
         virtual void OnClose(int64_t user_id) = 0;
     };
