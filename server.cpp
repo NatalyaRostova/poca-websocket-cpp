@@ -9,11 +9,19 @@ class Callback : public poca_ws::WebSocketServerListener {
 public:
     poca_ws::WebSocketServer* s = nullptr;
 
-    virtual void OnReceive(int64_t user_id, uint8_t* data, int len) override {
-        printf("OnReceive, user_id: %ld, size: %d\n", user_id, len);
+    virtual void OnBinary(int64_t user_id, uint8_t* data, int len) override {
+        printf("OnBinary, user_id: %ld, size: %d\n", user_id, len);
         if (s) {
             std::string msg = "receive data, len: " + std::to_string(len);
             s->SendMessage(user_id, msg);
+        }
+    }
+
+    virtual void OnText(int64_t user_id, std::string& msg) override {
+        printf("OnText, user_id: %ld, len: %d\n", user_id, (int)msg.size());
+        if (s) {
+            std::string forward = "receive msg: " + msg;
+            s->SendMessage(user_id, forward);
         }
     }
 

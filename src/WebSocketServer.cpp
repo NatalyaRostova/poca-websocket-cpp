@@ -61,14 +61,17 @@ namespace poca_ws {
         while (true) {
             if (close_.load()) break;
             buf = ring_receive_buf_full_->Get();
-            if (buf == nullptr) continue;
+            if (buf == nullptr) {
+                continue;
+            }
             switch (buf->GetType()) {
                 case ServerCallbackOnBinaryReceive:
-                    listener_->OnReceive(buf->GetUserId(), buf->GetPtr(), buf->GetLength());
+                    listener_->OnBinary(buf->GetUserId(), buf->GetPtr(), buf->GetLength());
                     break;
-                case ServerCallbackOnTextReceive:
-                    listener_->OnReceive(buf->GetUserId(), buf->GetPtr(), buf->GetLength());
-                    break;
+                case ServerCallbackOnTextReceive: {
+                    std::string msg((char*)buf->GetPtr());
+                    listener_->OnText(buf->GetUserId(), msg);
+                } break;
                 case ServerCallbackOnConnect:
                     listener_->OnConnect(buf->GetUserId());
                     break;
@@ -100,7 +103,7 @@ namespace poca_ws {
     }
 
     int WebSocketServer::LwsClientCallback(lws* wsi, lws_callback_reasons reason, void* user, void* in, size_t len) {
-        poca_info("LwsClientCallback, wsi: %p, reason: %d", wsi, reason);
+        // poca_info("LwsClientCallback, wsi: %p, reason: %d", wsi, reason);
         int64_t user_id = int64_t(wsi);
         switch (reason) {
             case LWS_CALLBACK_ESTABLISHED:
@@ -130,24 +133,22 @@ namespace poca_ws {
                     receive_buf_internal_[wsi] = ring_receive_buf_empty_->Get();
                 }
                 WebSocketFrameBuffer* on_receive = receive_buf_internal_[wsi];
-                on_receive->SetUserId(user_id);
-                if (is_binary) {
-                    on_receive->SetType(ServerCallbackOnBinaryReceive);
-                } else {
-                    on_receive->SetType(ServerCallbackOnTextReceive);
-                }
                 on_receive->Push((uint8_t*)in, len);
                 if (final) {
+                    on_receive->SetUserId(user_id);
+                    if (is_binary) {
+                        on_receive->SetType(ServerCallbackOnBinaryReceive);
+                    } else {
+                        on_receive->SetType(ServerCallbackOnTextReceive);
+                    }
                     ring_receive_buf_full_->Put(on_receive);
                 }
-                lws_callback_on_writable(wsi);
             } break;
             case LWS_CALLBACK_SERVER_WRITEABLE: {
                 WebSocketFrameBuffer* msg_submit;
                 if (ring_send_buf_full_->GetNoWait(msg_submit)) {
                     lws_write(wsi, msg_submit->GetPtr() + LWS_PRE, msg_submit->GetLength(),
                               (lws_write_protocol)msg_submit->GetType());
-                    // lws_callback_on_writable(wsi);
                     msg_submit->Clear();
                     ring_send_buf_empty_->Put(msg_submit);
                 }

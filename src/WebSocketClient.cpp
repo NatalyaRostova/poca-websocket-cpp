@@ -81,7 +81,7 @@ namespace poca_ws {
     }
 
     int WebSocketClient::LwsClientCallback(lws *wsi, lws_callback_reasons reason, void *user, void *in, size_t len) {
-        poca_info("LwsClientCallback, wsi: %p, reason: %d", wsi, reason);
+        // poca_info("LwsClientCallback, wsi: %p, reason: %d", wsi, reason);
         std::unique_lock<std::mutex> lck(mux_);
         std::function<void(void)> msg_submit;
         int first = 0, final = 0;
@@ -97,8 +97,14 @@ namespace poca_ws {
                 }
                 map_lws_wsc_[wsi]->receive_buf_internal_->Push((uint8_t *)in, len);
                 if (final) {
-                    map_lws_wsc_[wsi]->listener_->OnReceive(map_lws_wsc_[wsi]->receive_buf_internal_->GetPtr(),
-                                                            map_lws_wsc_[wsi]->receive_buf_internal_->GetLength());
+                    int is_binary = lws_frame_is_binary(wsi);
+                    if (is_binary) {
+                        map_lws_wsc_[wsi]->listener_->OnBinary(map_lws_wsc_[wsi]->receive_buf_internal_->GetPtr(),
+                                                               map_lws_wsc_[wsi]->receive_buf_internal_->GetLength());
+                    } else {
+                        std::string msg((char *)map_lws_wsc_[wsi]->receive_buf_internal_->GetPtr());
+                        map_lws_wsc_[wsi]->listener_->OnText(msg);
+                    }
                     map_lws_wsc_[wsi]->receive_buf_internal_->Clear();
                 }
                 break;

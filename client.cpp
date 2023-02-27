@@ -5,7 +5,10 @@
 
 class Callback : public poca_ws::WebSocketClientListener {
 public:
-    virtual void OnReceive(void* data, int len) override { std::cout << "Receive data, len: " << len << std::endl; }
+    virtual void OnBinary(uint8_t* data, int len) override {
+        std::cout << "Receive binary data, len: " << len << std::endl;
+    }
+    virtual void OnText(std::string& msg) override { std::cout << "OnText, len: " << msg.size() << std::endl; };
     virtual void OnClosed() override { std::cout << "OnClosed" << std::endl; }
 };
 

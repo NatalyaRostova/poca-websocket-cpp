@@ -3,6 +3,7 @@
 
 #include <condition_variable>
 #include <mutex>
+#include <utility>
 
 template <typename T>
 class RingFIFO {
@@ -57,6 +58,11 @@ public:
         size_ = size;
     }
     ~RingFIFO() { delete[] buffer_; }
+
+    int GetSize() {
+        std::unique_lock<std::mutex> lock(mux_);
+        return head_ - tail_;
+    }
 
 private:
     T* buffer_;
