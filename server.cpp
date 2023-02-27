@@ -5,9 +5,9 @@
 
 #include "WebSocketServer.h"
 
-class Callback : public WebSocketServerListener {
+class Callback : public poca_ws::WebSocketServerListener {
 public:
-    WebSocketServer* s = nullptr;
+    poca_ws::WebSocketServer* s = nullptr;
 
     virtual void OnReceive(int64_t user_id, void* data, int len) override {
         printf("OnReceive, user_id: %ld, size: %d\n", user_id, len);
@@ -23,13 +23,13 @@ public:
 };
 
 Callback cb;
-WebSocketServer* server;
+poca_ws::WebSocketServer* server;
 
 void sigint_handler(int sig) { server->Close(); }
 
 int main(int argc, char* argv[]) {
     signal(SIGINT, sigint_handler);
-    server = new WebSocketServer(cb);
+    server = new poca_ws::WebSocketServer(cb);
     cb.s = server;
     server->ListenAndServe(8080);
 }
