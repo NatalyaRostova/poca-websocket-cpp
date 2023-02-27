@@ -17,41 +17,20 @@ namespace poca_ws {
         ServerCallbackOnClose
     };
 
-    WebSocketServer::WebSocketServer(WebSocketServerListener& listener) {
-        listener_ = &listener;
-        const int receive_buf_ring_size = 5;
-        const int send_buf_ring_size = 5;
-        ring_receive_buf_empty_ = new RingFIFO<WebSocketFrameBuffer*>(receive_buf_ring_size);
-        ring_receive_buf_full_ = new RingFIFO<WebSocketFrameBuffer*>(receive_buf_ring_size);
-
-        for (int i = 0; i < receive_buf_ring_size; ++i) {
-            WebSocketFrameBuffer* receive_buf = new WebSocketFrameBuffer();
-            receive_buf->Clear();
-            ring_receive_buf_empty_->Put(receive_buf);
-        }
-
-        ring_send_buf_empty_ = new RingFIFO<WebSocketFrameBuffer*>(send_buf_ring_size);
-        ring_send_buf_full_ = new RingFIFO<WebSocketFrameBuffer*>(send_buf_ring_size);
-
-        for (int i = 0; i < send_buf_ring_size; ++i) {
-            WebSocketFrameBuffer* send_buf = new WebSocketFrameBuffer();
-            send_buf->Clear();
-            ring_send_buf_empty_->Put(send_buf);
-        }
-    }
+    WebSocketServer::WebSocketServer(WebSocketServerListener& listener) { listener_ = &listener; }
 
     WebSocketServer::~WebSocketServer() {
         WebSocketFrameBuffer* receive_and_send_buf;
-        while (ring_receive_buf_empty_->GetNoWait(receive_and_send_buf)) {
+        while (deque_receive_buf_empty_.GetNoWait(receive_and_send_buf)) {
             if (receive_and_send_buf != nullptr) delete receive_and_send_buf;
         }
-        while (ring_receive_buf_full_->GetNoWait(receive_and_send_buf)) {
+        while (deque_receive_buf_full_.GetNoWait(receive_and_send_buf)) {
             if (receive_and_send_buf != nullptr) delete receive_and_send_buf;
         }
-        while (ring_send_buf_empty_->GetNoWait(receive_and_send_buf)) {
+        while (deque_send_buf_empty_.GetNoWait(receive_and_send_buf)) {
             if (receive_and_send_buf != nullptr) delete receive_and_send_buf;
         }
-        while (ring_send_buf_full_->GetNoWait(receive_and_send_buf)) {
+        while (deque_send_buf_full_.GetNoWait(receive_and_send_buf)) {
             if (receive_and_send_buf != nullptr) delete receive_and_send_buf;
         }
     }
@@ -60,7 +39,7 @@ namespace poca_ws {
         WebSocketFrameBuffer* buf;
         while (true) {
             if (close_.load()) break;
-            buf = ring_receive_buf_full_->Get();
+            buf = deque_receive_buf_full_.Get();
             if (buf == nullptr) {
                 continue;
             }
@@ -82,7 +61,7 @@ namespace poca_ws {
                     break;
             }
             buf->Clear();
-            ring_receive_buf_empty_->Put(buf);
+            deque_receive_buf_empty_.Put(buf);
         }
     }
 
@@ -109,19 +88,25 @@ namespace poca_ws {
             case LWS_CALLBACK_ESTABLISHED:
                 poca_info("client [%p] connect", wsi);
                 {
-                    WebSocketFrameBuffer* on_connect = ring_receive_buf_empty_->Get();
+                    WebSocketFrameBuffer* on_connect;
+                    if (!deque_receive_buf_empty_.GetNoWait(on_connect)) {
+                        on_connect = new WebSocketFrameBuffer();
+                    }
                     on_connect->SetUserId(user_id);
                     on_connect->SetType(ServerCallbackOnConnect);
-                    ring_receive_buf_full_->Put(on_connect);
+                    deque_receive_buf_full_.Put(on_connect);
                 }
                 break;
             case LWS_CALLBACK_CLOSED:
                 poca_info("client connect close, wsi: %p", wsi);
                 {
-                    WebSocketFrameBuffer* on_connect = ring_receive_buf_empty_->Get();
-                    on_connect->SetUserId(user_id);
-                    on_connect->SetType(ServerCallbackOnClose);
-                    ring_receive_buf_full_->Put(on_connect);
+                    WebSocketFrameBuffer* on_close;
+                    if (!deque_receive_buf_empty_.GetNoWait(on_close)) {
+                        on_close = new WebSocketFrameBuffer();
+                    }
+                    on_close->SetUserId(user_id);
+                    on_close->SetType(ServerCallbackOnClose);
+                    deque_receive_buf_full_.Put(on_close);
                 }
                 break;
             case LWS_CALLBACK_RECEIVE: {
@@ -129,10 +114,16 @@ namespace poca_ws {
                 int final = lws_is_final_fragment(wsi);
                 int is_binary = lws_frame_is_binary(wsi);
                 // poca_info("Receive, wsi: %p, len: %d, first: %d, final: %d", wsi, len, first, final);
+                WebSocketFrameBuffer* on_receive;
                 if (first) {
-                    receive_buf_internal_[wsi] = ring_receive_buf_empty_->Get();
+                    if (!deque_receive_buf_empty_.GetNoWait(on_receive)) {
+                        on_receive = new WebSocketFrameBuffer();
+                    }
+                    on_receive->Clear();
+                    receive_buf_internal_[wsi] = on_receive;
+                } else {
+                    on_receive = receive_buf_internal_[wsi];
                 }
-                WebSocketFrameBuffer* on_receive = receive_buf_internal_[wsi];
                 on_receive->Push((uint8_t*)in, len);
                 if (final) {
                     on_receive->SetUserId(user_id);
@@ -141,16 +132,16 @@ namespace poca_ws {
                     } else {
                         on_receive->SetType(ServerCallbackOnTextReceive);
                     }
-                    ring_receive_buf_full_->Put(on_receive);
+                    deque_receive_buf_full_.Put(on_receive);
                 }
             } break;
             case LWS_CALLBACK_SERVER_WRITEABLE: {
                 WebSocketFrameBuffer* msg_submit;
-                if (ring_send_buf_full_->GetNoWait(msg_submit)) {
+                if (deque_send_buf_full_.GetNoWait(msg_submit)) {
                     lws_write(wsi, msg_submit->GetPtr() + LWS_PRE, msg_submit->GetLength(),
                               (lws_write_protocol)msg_submit->GetType());
                     msg_submit->Clear();
-                    ring_send_buf_empty_->Put(msg_submit);
+                    deque_send_buf_empty_.Put(msg_submit);
                 }
             } break;
             default:
@@ -197,13 +188,16 @@ namespace poca_ws {
 
     int WebSocketServer::SendMessage(int64_t user_id, std::string& msg) {
         lws* wsi = (lws*)user_id;
-        WebSocketFrameBuffer* msg_frame = ring_send_buf_empty_->Get();
+        WebSocketFrameBuffer* msg_frame;
+        if (!deque_send_buf_empty_.GetNoWait(msg_frame)) {
+            msg_frame = new WebSocketFrameBuffer();
+        }
         msg_frame->Push(nullptr, LWS_PRE);
         msg_frame->Push((uint8_t*)msg.c_str(), (int)msg.size());
         msg_frame->SetUserId(user_id);
         msg_frame->SetType(LWS_WRITE_TEXT);
 
-        ring_send_buf_full_->Put(msg_frame);
+        deque_send_buf_full_.Put(msg_frame);
         lws_callback_on_writable(wsi);
         lws_cancel_service(context_);
 
@@ -212,13 +206,16 @@ namespace poca_ws {
 
     int WebSocketServer::SendBinary(int64_t user_id, uint8_t* data, int len) {
         lws* wsi = (lws*)user_id;
-        WebSocketFrameBuffer* msg_frame = ring_send_buf_empty_->Get();
+        WebSocketFrameBuffer* msg_frame;
+        if (!deque_send_buf_empty_.GetNoWait(msg_frame)) {
+            msg_frame = new WebSocketFrameBuffer();
+        }
         msg_frame->Push(nullptr, LWS_PRE);
         msg_frame->Push(data, len);
         msg_frame->SetUserId(user_id);
         msg_frame->SetType(LWS_WRITE_BINARY);
 
-        ring_send_buf_full_->Put(msg_frame);
+        deque_send_buf_full_.Put(msg_frame);
         lws_callback_on_writable(wsi);
         lws_cancel_service(context_);
 
@@ -228,7 +225,7 @@ namespace poca_ws {
     void WebSocketServer::Close() {
         close_.store(true);
         WebSocketFrameBuffer* none = nullptr;
-        ring_receive_buf_full_->Put(none);
+        deque_receive_buf_full_.Put(none);
         lws_cancel_service(context_);
     }
 }  // namespace poca_ws

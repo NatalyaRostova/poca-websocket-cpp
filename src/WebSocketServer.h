@@ -12,6 +12,7 @@
 #include "WebSocketServerListener.h"
 #include "libwebsockets.h"
 #include "ring_fifo.h"
+#include "sync_deque.h"
 
 namespace poca_ws {
     class WebSocketServer {
@@ -35,14 +36,14 @@ namespace poca_ws {
         bool conn_established_ = false;
         std::atomic_bool close_ = ATOMIC_VAR_INIT(false);
 
-        RingFIFO<WebSocketFrameBuffer*>* ring_receive_buf_empty_;
-        RingFIFO<WebSocketFrameBuffer*>* ring_receive_buf_full_;
+        SyncDeque<WebSocketFrameBuffer*> deque_receive_buf_empty_;
+        SyncDeque<WebSocketFrameBuffer*> deque_receive_buf_full_;
         std::map<lws*, WebSocketFrameBuffer*> receive_buf_internal_;
         std::thread callback_thread_;
         void CallbackEventLoop();
 
-        RingFIFO<WebSocketFrameBuffer*>* ring_send_buf_empty_;
-        RingFIFO<WebSocketFrameBuffer*>* ring_send_buf_full_;
+        SyncDeque<WebSocketFrameBuffer*> deque_send_buf_empty_;
+        SyncDeque<WebSocketFrameBuffer*> deque_send_buf_full_;
 
         int LwsClientCallback(lws* wsi, lws_callback_reasons reason, void* user, void* in, size_t len);
 

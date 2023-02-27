@@ -140,6 +140,7 @@ namespace poca_ws {
     }
 
     int WebSocketClient::SendMessage(std::string &msg) {
+        WaitConnEstablish();
         WebSocketFrameBuffer *msg_frame = ring_send_buf_empty_->Get();
         msg_frame->Push(nullptr, LWS_PRE);
         msg_frame->Push((uint8_t *)msg.c_str(), (int)msg.size());
@@ -153,6 +154,7 @@ namespace poca_ws {
     }
 
     int WebSocketClient::SendBinary(uint8_t *data, int len) {
+        WaitConnEstablish();
         WebSocketFrameBuffer *msg_frame = ring_send_buf_empty_->Get();
         msg_frame->Push(nullptr, LWS_PRE);
         msg_frame->Push(data, len);
